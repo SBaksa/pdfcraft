@@ -953,6 +953,36 @@ fn reading_follows_form_xobjects() {
 
 /// Forms that draw themselves or each other, have no resources, a malformed matrix, or are
 /// missing are read once (or skipped) without panicking or looping.
+/// A chain of forms, each drawing the next twenty times, twelve deep: within the depth cap but
+/// 20^11 visits without a budget. Reading stops at the page's visit budget instead of hanging.
+#[test]
+fn form_xobjects_that_fan_out_stop_at_the_visit_budget() {
+    let font = "/Font << /F1 5 0 R >>";
+    let levels = 12;
+    let mut objs = vec![
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Resources << /Font << /F1 5 0 R >> /XObject << /N 6 0 R >> >> /Contents 4 0 R >>"
+            .to_string(),
+        stream("", "/N Do"),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
+    ];
+    for level in 0..levels {
+        let next = 7 + level;
+        objs.push(if level + 1 == levels {
+            stream(&format!("/Subtype /Form /BBox [0 0 9 9] /Resources << {font} >>"), "BT /F1 10 Tf 10 10 Td (leaf) Tj ET")
+        } else {
+            stream(&format!("/Subtype /Form /BBox [0 0 9 9] /Resources << {font} /XObject << /N {next} 0 R >> >>"), &"/N Do ".repeat(20))
+        });
+    }
+    let refs: Vec<&str> = objs.iter().map(String::as_str).collect();
+    let doc = build(&refs);
+    let start = std::time::Instant::now();
+    let _ = text::reading_blocks(&doc, 0).unwrap();
+    assert!(images::reading_images(&doc, 0).unwrap().is_empty());
+    assert!(start.elapsed() < std::time::Duration::from_secs(30), "took {:?}", start.elapsed());
+}
+
 #[test]
 fn hostile_form_xobjects_are_read_once() {
     let page = stream("", "/Loop Do /A Do /NoRes Do /Bad Do /Missing Do /F1 Do");

@@ -109,7 +109,16 @@ pub fn reading_images(doc: &Document, page: usize) -> Result<Vec<PageImage>, Edi
         ctm: Matrix,
         stack: Vec<Matrix>,
     }
-    fn walk(doc: &Document, data: &[u8], resources: &Dict, st: &mut State, stream: usize, path: &mut Vec<ObjRef>, out: &mut Vec<PageImage>) {
+    fn walk(
+        doc: &Document,
+        data: &[u8],
+        resources: &Dict,
+        st: &mut State,
+        stream: usize,
+        path: &mut Vec<ObjRef>,
+        visits: &mut usize,
+        out: &mut Vec<PageImage>,
+    ) {
         let xo = resources.get(b"XObject").map(|x| doc.resolve(x)).and_then(|x| x.as_dict().cloned()).unwrap_or_default();
         let (ctm, stack) = (&mut st.ctm, &mut st.stack);
         for (i, op) in parse(data).ops.iter().enumerate() {
@@ -123,12 +132,12 @@ pub fn reading_images(doc: &Document, page: usize) -> Result<Vec<PageImage>, Edi
                 }
                 b"Do" => {
                     let Some(name) = op.name(0) else { continue };
-                    if let Some(form) = crate::text::form_call(doc, resources, name, *ctm, path) {
+                    if let Some(form) = crate::text::form_call(doc, resources, name, *ctm, path, visits) {
                         if let Some(r) = form.obj {
                             path.push(r);
                         }
                         let mut inner = State { ctm: form.ctm, stack: Vec::new() };
-                        walk(doc, &form.data, &form.resources, &mut inner, stream, path, out);
+                        walk(doc, &form.data, &form.resources, &mut inner, stream, path, visits, out);
                         if form.obj.is_some() {
                             path.pop();
                         }
@@ -160,8 +169,9 @@ pub fn reading_images(doc: &Document, page: usize) -> Result<Vec<PageImage>, Edi
     let mut out = Vec::new();
     let mut st = State { ctm: Matrix::IDENTITY, stack: Vec::new() };
     let mut path = Vec::new();
+    let mut visits = 0;
     for (si, (_, data)) in streams(doc, &p.dict).into_iter().enumerate() {
-        walk(doc, &data, &res, &mut st, si, &mut path, &mut out);
+        walk(doc, &data, &res, &mut st, si, &mut path, &mut visits, &mut out);
     }
     Ok(out)
 }

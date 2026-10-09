@@ -518,6 +518,11 @@ fn add_shown(lines: &mut Vec<TextLine>, last: &mut Option<(usize, f64, f64, f64)
 /// How deep form XObjects nest before reading stops (they may also refer to themselves).
 pub(crate) const MAX_FORM_DEPTH: usize = 12;
 
+/// The most form XObjects one page's walk enters, at any depth. The depth cap alone still lets
+/// a form that draws another form many times fan out exponentially (100 `Do`s on each of 12
+/// levels), which would hang export on a hostile PDF.
+pub(crate) const MAX_FORM_VISITS: usize = 4096;
+
 /// A form XObject a page draws: its object, content, resources and its matrix composed with the
 /// CTM at the `Do`.
 pub(crate) struct FormCall {
@@ -528,9 +533,17 @@ pub(crate) struct FormCall {
 }
 
 /// The form XObject `name` in `resources`, drawn with `ctm`. `None` for images, missing names
-/// and forms already being read (`path`) or nested too deep.
-pub(crate) fn form_call(doc: &Document, resources: &Dict, name: &[u8], ctm: Matrix, path: &[pdfcraft_cos::ObjRef]) -> Option<FormCall> {
-    if path.len() >= MAX_FORM_DEPTH {
+/// and forms already being read (`path`), nested too deep, or past the page's `visits` budget
+/// ([`MAX_FORM_VISITS`]); each form entered counts one visit.
+pub(crate) fn form_call(
+    doc: &Document,
+    resources: &Dict,
+    name: &[u8],
+    ctm: Matrix,
+    path: &[pdfcraft_cos::ObjRef],
+    visits: &mut usize,
+) -> Option<FormCall> {
+    if path.len() >= MAX_FORM_DEPTH || *visits >= MAX_FORM_VISITS {
         return None;
     }
     let xobjects = resources.get(b"XObject").map(|x| doc.resolve(x)).and_then(|x| x.as_dict().cloned())?;
@@ -550,6 +563,7 @@ pub(crate) fn form_call(doc: &Document, resources: &Dict, name: &[u8], ctm: Matr
     });
     // A form without its own resources uses the ones it was drawn with (PDF 1.1 files).
     let own = s.dict.get(b"Resources").map(|r| doc.resolve(r)).and_then(|r| r.as_dict().cloned());
+    *visits = visits.saturating_add(1);
     Some(FormCall {
         obj,
         data: s.decoded().unwrap_or_default(),
@@ -567,6 +581,7 @@ fn reading_lines(doc: &Document, page: usize) -> Result<Vec<TextLine>, EditError
         lines: Vec<TextLine>,
         next_stream: usize,
         path: Vec<pdfcraft_cos::ObjRef>,
+        visits: usize,
     }
     fn walk(w: &mut Walk, ops: &[Op], resources: &Dict, carry: &mut Carry, stream: usize) {
         let fonts_res = resources.get(b"Font").map(|f| w.doc.resolve(f)).and_then(|f| f.as_dict().cloned()).unwrap_or_default();
@@ -588,7 +603,7 @@ fn reading_lines(doc: &Document, page: usize) -> Result<Vec<TextLine>, EditError
         }
     }
     fn enter(w: &mut Walk, resources: &Dict, name: &[u8], ts: Ts) {
-        let Some(form) = form_call(w.doc, resources, name, ts.ctm, &w.path) else { return };
+        let Some(form) = form_call(w.doc, resources, name, ts.ctm, &w.path, &mut w.visits) else { return };
         let ops = parse(&form.data).ops;
         // The form starts with the graphics state at its `Do`, its own matrix applied.
         let mut carry = Carry { ts: Ts { ctm: form.ctm, ..ts }, stack: Vec::new() };
@@ -605,7 +620,7 @@ fn reading_lines(doc: &Document, page: usize) -> Result<Vec<TextLine>, EditError
     let p = page_dict(doc, page)?;
     let res = p.dict.get(b"Resources").map(|r| doc.resolve(r)).and_then(|r| r.as_dict().cloned()).unwrap_or_default();
     let streams = content_streams(doc, &p.dict);
-    let mut w = Walk { doc, lines: Vec::new(), next_stream: streams.len(), path: Vec::new() };
+    let mut w = Walk { doc, lines: Vec::new(), next_stream: streams.len(), path: Vec::new(), visits: 0 };
     let mut carry = Carry::new();
     for (si, (_, data)) in streams.into_iter().enumerate() {
         walk(&mut w, &parse(&data).ops, &res, &mut carry, si);
