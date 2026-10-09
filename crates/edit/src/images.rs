@@ -105,20 +105,16 @@ pub fn page_images(doc: &Document, page: usize) -> Result<Vec<PageImage>, EditEr
 pub fn reading_images(doc: &Document, page: usize) -> Result<Vec<PageImage>, EditError> {
     /// The CTM and `q` stack carry from one page stream to the next (§7.8.2); a form starts
     /// its own.
+    /// The forms being read (cycle guard) and how many were entered (the page's budget).
+    struct Forms {
+        path: Vec<ObjRef>,
+        visits: usize,
+    }
     struct State {
         ctm: Matrix,
         stack: Vec<Matrix>,
     }
-    fn walk(
-        doc: &Document,
-        data: &[u8],
-        resources: &Dict,
-        st: &mut State,
-        stream: usize,
-        path: &mut Vec<ObjRef>,
-        visits: &mut usize,
-        out: &mut Vec<PageImage>,
-    ) {
+    fn walk(doc: &Document, data: &[u8], resources: &Dict, st: &mut State, stream: usize, forms: &mut Forms, out: &mut Vec<PageImage>) {
         let xo = resources.get(b"XObject").map(|x| doc.resolve(x)).and_then(|x| x.as_dict().cloned()).unwrap_or_default();
         let (ctm, stack) = (&mut st.ctm, &mut st.stack);
         for (i, op) in parse(data).ops.iter().enumerate() {
@@ -132,14 +128,14 @@ pub fn reading_images(doc: &Document, page: usize) -> Result<Vec<PageImage>, Edi
                 }
                 b"Do" => {
                     let Some(name) = op.name(0) else { continue };
-                    if let Some(form) = crate::text::form_call(doc, resources, name, *ctm, path, visits) {
+                    if let Some(form) = crate::text::form_call(doc, resources, name, *ctm, &forms.path, &mut forms.visits) {
                         if let Some(r) = form.obj {
-                            path.push(r);
+                            forms.path.push(r);
                         }
                         let mut inner = State { ctm: form.ctm, stack: Vec::new() };
-                        walk(doc, &form.data, &form.resources, &mut inner, stream, path, visits, out);
+                        walk(doc, &form.data, &form.resources, &mut inner, stream, forms, out);
                         if form.obj.is_some() {
-                            path.pop();
+                            forms.path.pop();
                         }
                         continue;
                     }
@@ -168,10 +164,9 @@ pub fn reading_images(doc: &Document, page: usize) -> Result<Vec<PageImage>, Edi
     let res = p.dict.get(b"Resources").map(|r| doc.resolve(r)).and_then(|r| r.as_dict().cloned()).unwrap_or_default();
     let mut out = Vec::new();
     let mut st = State { ctm: Matrix::IDENTITY, stack: Vec::new() };
-    let mut path = Vec::new();
-    let mut visits = 0;
+    let mut forms = Forms { path: Vec::new(), visits: 0 };
     for (si, (_, data)) in streams(doc, &p.dict).into_iter().enumerate() {
-        walk(doc, &data, &res, &mut st, si, &mut path, &mut visits, &mut out);
+        walk(doc, &data, &res, &mut st, si, &mut forms, &mut out);
     }
     Ok(out)
 }
