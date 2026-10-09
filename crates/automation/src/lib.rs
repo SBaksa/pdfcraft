@@ -420,6 +420,7 @@ impl Automation {
                 let block = self.doc(&a)?.text_blocks(page)[k as usize - 1].clone();
                 let text = a.opt_str("text")?.map(str::to_owned).unwrap_or(block.text);
                 let mut style = pdfcraft_engine::BlockStyle {
+                    bold: a.opt_bool("bold")?,
                     size: a.opt_num("size")?,
                     underline: a.opt_bool("underline")?,
                     line_spacing: a.opt_num("line_spacing")?,
@@ -1689,7 +1690,7 @@ fn info(d: &Document) -> Value {
         "links": i.links.iter().map(|l| json!({
             "page": page1(l.page), "rect": view_rect(i, l.page, l.rect),
             "target": match &l.target {
-                pdfcraft_render::LinkTarget::Page(p) => json!({ "page": page1(*p) }),
+                pdfcraft_render::LinkTarget::Page(p, _) => json!({ "page": page1(*p) }),
                 pdfcraft_render::LinkTarget::Uri(u) => json!({ "uri": u }),
                 pdfcraft_render::LinkTarget::SetLayers { changes, preserve_rb } => json!({
                     "layers": changes.iter().map(|(op, ocg)| json!({
